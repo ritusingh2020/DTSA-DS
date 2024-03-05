@@ -1,0 +1,177 @@
+---
+title: "NYPD Shooting Data (Historic)"
+date: "2024-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import libraries that are needed
+```{r libs}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+```
+
+
+## Load the data, check for missing values, head and summary the data
+```{r load_data}
+ nypd_shooting_data <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+
+# nypd_shooting_data <- read.csv("NYPD_Shooting_Incident_Data__Historic_.csv")
+nrow(nypd_shooting_data)
+
+# Let us check rows that miss value for one or more columns 
+nrow(nypd_shooting_data[complete.cases(na_if(nypd_shooting_data, '')), ])
+
+# majority of rows have one or more columns missing values, so we cannot just drop or impute them
+# but columns like boro, date, time etc that we want to analyze have no missing values, 
+# so we are going to leave it as it is
+nypd_shooting_data <- nypd_shooting_data %>% drop_na(BORO) %>% drop_na(OCCUR_DATE)
+
+glimpse(nypd_shooting_data)
+
+nrow(nypd_shooting_data)
+
+head(nypd_shooting_data)
+
+summary(nypd_shooting_data)
+```
+
+## Clean up the data
+```{r clean_data, message=TRUE, warning=TRUE}
+shooting_data_clean <- nypd_shooting_data %>%
+    mutate(BORO = as_factor(BORO),
+         JURISDICTION_CODE = as_factor(JURISDICTION_CODE),
+         STATISTICAL_MURDER_FLAG = as_factor(STATISTICAL_MURDER_FLAG),
+         LOCATION_DESC = as_factor(LOCATION_DESC),
+         VIC_AGE_GROUP = as_factor(VIC_AGE_GROUP),
+         VIC_SEX = as_factor(VIC_SEX),
+         VIC_RACE = as_factor(VIC_RACE),
+         PERP_AGE_GROUP = as_factor(PERP_AGE_GROUP),
+         PERP_SEX = as_factor(PERP_SEX),
+         PERP_RACE = as_factor(PERP_RACE),
+         OCCUR_DATE = as.Date(OCCUR_DATE, format = "%m/%d/%Y"),
+         ) %>%
+  # Select only the columns we need
+  select(OCCUR_DATE, OCCUR_TIME, BORO, PRECINCT, 
+         STATISTICAL_MURDER_FLAG,  VIC_SEX, VIC_RACE, 
+         PERP_SEX, PERP_RACE)
+
+# Convert OCCUR_TIME to numeric format to get time in 1600 format
+shooting_data_clean$OCCUR_TIME_NUMERIC <- (as.numeric(gsub(":", "", shooting_data_clean$OCCUR_TIME))) / 100
+
+# Print the first 10 rows of the new variable
+head(shooting_data_clean$OCCUR_TIME_NUMERIC, 10)
+
+# Display the first few rows of the cleaned dataset
+head(shooting_data_clean)
+
+# Display a summary of the cleaned dataset
+summary(shooting_data_clean)  
+```
+
+## Add some new columns
+```{r add_new_columns, message=TRUE, warning=TRUE}
+# Create new columns for year, month, and day
+shooting_data_clean <- shooting_data_clean %>%
+  mutate(YEAR = as.numeric(format(OCCUR_DATE,'%Y')),
+         MONTH = month(OCCUR_DATE, label = TRUE),
+         DAY = day(OCCUR_DATE))
+
+
+
+# Create a new column with time buckets
+shooting_data_clean <- shooting_data_clean %>%
+  mutate(time_bucket = cut(OCCUR_TIME_NUMERIC, breaks = c(0, 400, 800, 1200, 1600, 2000, 2400), labels = c("1", "2", "3", "4", "5", "6"), include.lowest = TRUE))
+
+# Display the first few rows of the cleaned dataset
+head(shooting_data_clean)
+
+```
+
+## Model
+```{r test_model}
+
+set.seed(123)
+train_indices <- sample(nrow(shooting_data_clean), round(nrow(shooting_data_clean) * 0.7))
+train_data <- shooting_data_clean[train_indices, ]
+test_data <- shooting_data_clean[-train_indices, ]
+
+# Fit a logistic regression model to predict STATISTICAL_MURDER_FLAG
+model <- glm(STATISTICAL_MURDER_FLAG ~ BORO + VIC_SEX + YEAR + OCCUR_TIME_NUMERIC, data = train_data, family = binomial())
+
+# Print the model summary
+summary(model)
+
+# Make predictions on the testing data
+predictions <- predict(model, newdata = test_data, type = "response")
+head(predictions)
+
+```
+
+
+## Visualization 1 - Bar chart showing number of shootings by boro
+### (This plot would be better if we knew population of all boros and could do shootings per thousand or million)
+```{r visualization_1}
+shooting_data_clean %>%
+  count(BORO) %>%
+  ggplot(aes(x = BORO, y = n, fill = BORO)) +
+  geom_col() +
+  labs(title = "Number of Shooting Incidents by Borough",
+       x = "Borough",
+       y = "Number of Incidents") +
+  theme_minimal()
+```
+
+
+## Visualization 2 - Plot showing shooting incidents by time of day
+```{r visualization_2}
+# Count the number of shootings by time bucket
+shooting_counts_by_time <- shooting_data_clean %>%
+  group_by(time_bucket) %>%
+  summarize(count = n())
+
+# Plot the number of shootings by time bucket
+ggplot(shooting_counts_by_time, aes(x = time_bucket, y = count)) +
+  geom_bar(stat = "identity", fill = "#003f5c") +
+  scale_x_discrete(labels = c("0-4", "4-8", "8-12", "12-16", "16-20", "20-24")) +
+  labs(title = "Number of Shooting Incidents by Time of Day", x = "Time of Day (hours)", y = "Number of Shooting Incidents")
+
+```
+
+
+
+
+## Visualization 3 - Bar plot showing shooting incidents by year
+```{r visualization_3}
+ggplot(shooting_data_clean, aes(x = YEAR, fill = YEAR)) +
+  geom_bar() +
+  ggtitle("Shooting Incidents by Year") +
+  xlab("Year") +
+  ylab("Number of Incidents") +
+  theme_minimal()
+```
+
+
+
+
+
+
+## Conclusion
+We analyzed the NYPD shooting incident data set, provided by NYC Open Data portal. This dataset contained information about shooting incidents like where they occurred, when they occurred and some details about victims and perpetrators.
+
+We started by importing required libraries, importing the data, cleaning it up for type conversions etc. and dropping columns that we did not need. We also added some new columns to help us better analyze. Looked at rows with missing data for various columns and had no missing data for columns that we analyzed.
+
+We found that shooting incident in New York city were going down over period of time but they have gone up again starting 2020. Also, most shooting incidents were reported between 8 pm and 4 am.
+
+This dataset may be subject to source of bias such as under reporting of shooting incidents. Data may not fully represent diversity of New York city. Our analysis was limited by available number of variables. Personal bias can also come through our own experience and assumptions like if we know demography of the city and start to analyze based on data. We tried to mitigate that by not making any assumptions.
+
+## Session Info
+```{r session_info}
+sessionInfo()
+
+```
